@@ -8,12 +8,19 @@ on:
       - 'requirements.txt'
   workflow_dispatch:
 
+# Ajouter les permissions nécessaires
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   train:
     runs-on: ubuntu-latest
     
     steps:
     - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -43,5 +50,9 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add models/
-        git diff --staged --quiet || git commit -m "Update trained model [skip ci]"
-        git push
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "Update trained model [skip ci]"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+        fi
