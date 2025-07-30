@@ -28,7 +28,7 @@ def train_model():
     )
     
     print("Entraînement du modèle...")
-    model = RandomForestClassifier(n_estimators=80, random_state=42)
+    model = RandomForestClassifier(n_estimators=85, random_state=42)
     model.fit(X_train, y_train)
     
     # Évaluation
