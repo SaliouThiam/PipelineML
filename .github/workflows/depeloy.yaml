@@ -10,20 +10,41 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.9'
+    
+    # Télécharger les artifacts du workflow de training
+    - name: Download model artifacts
+      if: github.event_name == 'workflow_run'
+      uses: actions/download-artifact@v4
+      with:
+        name: trained-model
+        path: models/
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        run-id: ${{ github.event.workflow_run.id }}
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+    
+    # S'assurer qu'un modèle existe
+    - name: Ensure model exists
+      run: |
+        if [ ! -f "models/model.pkl" ]; then
+          echo "Model not found, training..."
+          python src/train.py
+        else
+          echo "Model found!"
+          ls -la models/
+        fi
     
     - name: Build Docker image
       run: |
@@ -33,20 +54,34 @@ jobs:
       run: |
         docker run -d -p 5000:5000 --name test-container mlops-model:latest
         sleep 15
-        curl -X GET http://localhost:5000/health
+        
+        # Test health endpoint
+        echo "Testing health endpoint..."
+        curl -f http://localhost:5000/health || exit 1
+        
+        # Test prediction endpoint
+        echo "Testing prediction endpoint..."
+        curl -f -X POST http://localhost:5000/predict \
+          -H "Content-Type: application/json" \
+          -d '{"features": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}' || exit 1
+        
         docker stop test-container
         docker rm test-container
+        
+        echo "✅ Deployment test successful!"
     
-    # Exemple de déploiement sur une registry Docker
+    # Optionnel : Push vers Docker Hub
     - name: Login to DockerHub
-      if: github.ref == 'refs/heads/main'
-      uses: docker/login-action@v2
+      if: github.ref == 'refs/heads/main' && env.DOCKER_USERNAME != ''
+      uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
     
     - name: Push to DockerHub
-      if: github.ref == 'refs/heads/main'
+      if: github.ref == 'refs/heads/main' && env.DOCKER_USERNAME != ''
       run: |
         docker tag mlops-model:latest ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest
         docker push ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}

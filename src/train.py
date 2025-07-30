@@ -9,7 +9,7 @@ import os
 def create_sample_data():
     """Crée des données d'exemple pour la démonstration"""
     X, y = make_classification(
-        n_samples=1050, 
+        n_samples=1000, 
         n_features=20, 
         n_informative=10, 
         n_redundant=10, 
