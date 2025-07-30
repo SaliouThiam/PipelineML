@@ -7,33 +7,27 @@ on:
       - completed
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-
+    
     steps:
     - uses: actions/checkout@v4
-
+    
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.9'
-
-    - name: Download model artifacts
-      if: github.event_name == 'workflow_run'
-      uses: actions/download-artifact@v4
-      with:
-        name: trained-model
-        path: models/
-        github-token: ${{ secrets.GITHUB_TOKEN }}
-        run-id: ${{ github.event.workflow_run.id }}
-
+    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-
+    
     - name: Ensure model exists
       run: |
         if [ ! -f "models/model.pkl" ]; then
@@ -43,38 +37,114 @@ jobs:
           echo "Model found!"
           ls -la models/
         fi
-
+    
     - name: Build Docker image
       run: |
         docker build -t mlops-model:latest .
-
-    - name: Test Docker container
+        echo "✅ Docker image built successfully!"
+    
+    - name: Test Docker container locally
       run: |
         docker run -d -p 5000:5000 --name test-container mlops-model:latest
         sleep 15
-
+        
+        # Test health endpoint
         echo "Testing health endpoint..."
         curl -f http://localhost:5000/health || exit 1
-
+        
+        # Test prediction endpoint
         echo "Testing prediction endpoint..."
-        curl -f -X POST http://localhost:5000/predict \
+        response=$(curl -s -X POST http://localhost:5000/predict \
           -H "Content-Type: application/json" \
-          -d '{"features": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}' || exit 1
-
+          -d '{"features": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}')
+        echo "Prediction response: $response"
+        
         docker stop test-container
         docker rm test-container
-
-        echo "✅ Deployment test successful!"
-
+        echo "✅ Local container test successful!"
+    
+    # Étape 1: Push vers Docker Hub
     - name: Login to DockerHub
       if: github.ref == 'refs/heads/main'
       uses: docker/login-action@v3
       with:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
-
+    
     - name: Push to DockerHub
       if: github.ref == 'refs/heads/main'
       run: |
+        # Tag avec version et latest
         docker tag mlops-model:latest ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest
+        docker tag mlops-model:latest ${{ secrets.DOCKER_USERNAME }}/mlops-model:v${{ github.run_id }}
+        
+        # Push des deux tags
         docker push ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/mlops-model:v${{ github.run_id }}
+        
+        echo "✅ Image pushed to Docker Hub!"
+        echo "Image: ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest"
+        echo "Version: ${{ secrets.DOCKER_USERNAME }}/mlops-model:v${{ github.run_id }}"
+    
+    # Étape 2: Déployer sur Render
+    - name: Deploy to Render
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo "Triggering Render deployment..."
+        curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "clear_cache": false,
+            "image_url": "docker.io/${{ secrets.DOCKER_USERNAME }}/mlops-model:latest"
+          }'
+        echo "✅ Render deployment triggered!"
+    
+    # Étape 3: Vérifier le déploiement Render
+    - name: Wait and test Render deployment
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo "Waiting for Render deployment to complete..."
+        sleep 60  # Attendre que le déploiement se termine
+        
+        # Tester l'endpoint Render
+        echo "Testing Render deployment..."
+        max_attempts=10
+        attempt=1
+        
+        while [ $attempt -le $max_attempts ]; do
+          echo "Attempt $attempt/$max_attempts"
+          
+          if curl -f -s "${{ secrets.RENDER_APP_URL }}/health"; then
+            echo "✅ Render deployment successful!"
+            
+            # Test de prédiction sur Render
+            echo "Testing prediction on Render..."
+            curl -X POST "${{ secrets.RENDER_APP_URL }}/predict" \
+              -H "Content-Type: application/json" \
+              -d '{"features": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]}'
+            
+            echo "✅ Production deployment verified!"
+            break
+          else
+            echo "Deployment not ready yet, waiting..."
+            sleep 30
+            attempt=$((attempt + 1))
+          fi
+        done
+        
+        if [ $attempt -gt $max_attempts ]; then
+          echo "❌ Render deployment verification failed"
+          exit 1
+        fi
+    
+    # Étape 4: Notification (optionnel)
+    - name: Deployment Summary
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo "🚀 DEPLOYMENT SUMMARY"
+        echo "===================="
+        echo "✅ Docker Image: ${{ secrets.DOCKER_USERNAME }}/mlops-model:latest"
+        echo "✅ Version: v${{ github.run_id }}"
+        echo "✅ Render URL: ${{ secrets.RENDER_APP_URL }}"
+        echo "✅ Health Check: ${{ secrets.RENDER_APP_URL }}/health"
+        echo "✅ Prediction API: ${{ secrets.RENDER_APP_URL }}/predict"
